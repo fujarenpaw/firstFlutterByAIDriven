@@ -98,6 +98,7 @@ class RouteService {
             print('ルート生成成功: ${points.length}ポイント');
           } else {
             print('警告: ポリラインのポイントが空です');
+            throw Exception('ポリラインのポイントが空です');
           }
         } else {
           print('警告: ルートが見つかりませんでした');

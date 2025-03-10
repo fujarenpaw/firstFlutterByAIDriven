@@ -95,21 +95,28 @@ class _MapScreenState extends State<MapScreen> {
     }
 
     try {
-      final Position position = await Geolocator.getCurrentPosition();
-      print('現在地を取得: lat=${position.latitude}, lng=${position.longitude}');
+      final Position position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+        timeLimit: const Duration(seconds: 5),
+      );
+      
+      if (!mounted) return;
+      
       setState(() {
         _currentPosition = position;
         _updateCurrentLocationMarker();
       });
 
-      _controller?.animateCamera(
-        CameraUpdate.newCameraPosition(
-          CameraPosition(
-            target: LatLng(position.latitude, position.longitude),
-            zoom: 15.0,
+      if (_controller != null) {
+        await _controller!.animateCamera(
+          CameraUpdate.newCameraPosition(
+            CameraPosition(
+              target: LatLng(position.latitude, position.longitude),
+              zoom: 15.0,
+            ),
           ),
-        ),
-      );
+        );
+      }
     } catch (e) {
       print('現在地の取得に失敗: $e');
     }
@@ -134,8 +141,6 @@ class _MapScreenState extends State<MapScreen> {
   Future<void> _generateRoute(int? additionalTime) async {
     if (_currentPosition == null || _destinationLocation == null) {
       print('ルート生成エラー: 出発地または目的地が設定されていません');
-      print('出発地: ${_currentPosition?.latitude},${_currentPosition?.longitude}');
-      print('目的地: ${_destinationLocation?.latitude},${_destinationLocation?.longitude}');
       return;
     }
 
@@ -147,7 +152,8 @@ class _MapScreenState extends State<MapScreen> {
         additionalTime: additionalTime,
       );
 
-      // バッチで状態を更新
+      if (!mounted) return;
+
       setState(() {
         _polylines.clear();
         _polylines.addAll(result['polylines'] as Set<Polyline>);
@@ -170,7 +176,6 @@ class _MapScreenState extends State<MapScreen> {
           );
         }
       });
-      print('ルート生成完了: ${_polylines.length}本のポリライン, ${_waypoints.length}個の経由地点');
     } catch (e) {
       print('ルート生成エラー: $e');
     }
@@ -178,6 +183,7 @@ class _MapScreenState extends State<MapScreen> {
 
   Future<void> _searchPlaces(String query) async {
     if (query.isEmpty) {
+      if (!mounted) return;
       setState(() {
         _searchResults = [];
         _isSearching = false;
@@ -185,6 +191,7 @@ class _MapScreenState extends State<MapScreen> {
       return;
     }
 
+    if (!mounted) return;
     setState(() {
       _isSearching = true;
     });
@@ -200,7 +207,7 @@ class _MapScreenState extends State<MapScreen> {
       );
 
       final response = await http.get(url);
-      if (response.statusCode == 200) {
+      if (response.statusCode == 200 && mounted) {
         final data = json.decode(response.body);
         setState(() {
           _searchResults = data['predictions'];
@@ -209,9 +216,11 @@ class _MapScreenState extends State<MapScreen> {
       }
     } catch (e) {
       print('Error searching places: $e');
-      setState(() {
-        _isSearching = false;
-      });
+      if (mounted) {
+        setState(() {
+          _isSearching = false;
+        });
+      }
     }
   }
 
