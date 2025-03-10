@@ -200,7 +200,7 @@ class _MapScreenState extends State<MapScreen> {
       final url = Uri.parse(
         'https://maps.googleapis.com/maps/api/place/autocomplete/json'
         '?input=$query'
-        '&types=establishment'
+        '&types=establishment|point_of_interest'
         '&language=ja'
         '&components=country:jp'
         '&key=${dotenv.env['GOOGLE_MAPS_API_KEY']}'
