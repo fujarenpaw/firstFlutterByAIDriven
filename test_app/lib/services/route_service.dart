@@ -28,93 +28,30 @@ class RouteService {
       print('ルート検索開始: ${origin.latitude},${origin.longitude} → ${destination.latitude},${destination.longitude}');
       print('APIキー: ${_apiKey.substring(0, 8)}...'); // APIキーの一部を表示
 
-      final url = Uri.parse('https://routes.googleapis.com/directions/v2:computeRoutes');
-      
-      final requestBody = {
-        'origin': {
-          'location': {
-            'latLng': {
-              'latitude': origin.latitude,
-              'longitude': origin.longitude,
-            },
-          },
-        },
-        'destination': {
-          'location': {
-            'latLng': {
-              'latitude': destination.latitude,
-              'longitude': destination.longitude,
-            },
-          },
-        },
-        'travelMode': 'DRIVE',
-        'routingPreference': 'TRAFFIC_AWARE',
-        'computeAlternativeRoutes': false,
-        'routeModifiers': {
-          'vehicleInfo': {
-            'emissionType': 'GASOLINE',
-          },
-        },
-        'languageCode': 'ja-JP',
-        'units': 'METRIC',
-      };
-
-      final response = await http.post(
-        url,
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Goog-Api-Key': _apiKey,
-          'X-Goog-FieldMask': 'routes.duration,routes.distanceMeters,routes.polyline.encodedPolyline',
-        },
-        body: json.encode(requestBody),
-      );
-
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        if (data['routes'] != null && data['routes'].isNotEmpty) {
-          final route = data['routes'][0];
-          final encodedPolyline = route['polyline']['encodedPolyline'];
-          
-          // エンコードされたポリラインをデコード
-          final points = _decodePolyline(encodedPolyline);
-          
-          if (points.isNotEmpty) {
-            List<LatLng> polylineCoordinates = points
-                .map((point) => LatLng(
-                      point['lat'] ?? 0.0,
-                      point['lng'] ?? 0.0,
-                    ))
-                .toList();
-
-            polylines.add(
-              Polyline(
-                polylineId: const PolylineId('route'),
-                color: Colors.blue,
-                points: polylineCoordinates,
-                width: 5,
-              ),
-            );
-            
-            print('ルート生成成功: ${points.length}ポイント');
-          } else {
-            print('警告: ポリラインのポイントが空です');
-            throw Exception('ポリラインのポイントが空です');
-          }
-        } else {
-          print('警告: ルートが見つかりませんでした');
-          throw Exception('ルートが見つかりませんでした');
-        }
-      } else {
-        print('Directions API エラー: ${response.statusCode}');
-        print('レスポンス: ${response.body}');
-        throw Exception('ルート取得エラー: ${response.statusCode}');
+      // まず最短ルートを取得
+      final directRoute = await _getDirectRoute(origin, destination);
+      if (directRoute == null) {
+        throw Exception('最短ルートの取得に失敗しました');
       }
+
+      final baseDuration = directRoute['duration'];
+      print('最短ルートの所要時間: $baseDuration分');
 
       // 追加時間がある場合は経由地点を探索
       if (additionalTime != null) {
         print('経由地点の検索開始: 追加時間=$additionalTime分');
-        waypoints = await _findWaypoints(origin, destination, additionalTime);
+        waypoints = await _findWaypoints(origin, destination, baseDuration, additionalTime);
         print('経由地点の検索完了: ${waypoints.length}件');
+      }
+
+      // 経由地点がある場合は、それらを含むルートを取得
+      if (waypoints.isNotEmpty) {
+        final routeWithWaypoints = await _getRouteWithWaypoints(origin, destination, waypoints);
+        if (routeWithWaypoints != null) {
+          polylines = routeWithWaypoints['polylines'];
+        }
+      } else {
+        polylines = directRoute['polylines'];
       }
 
       return {
@@ -128,58 +65,193 @@ class RouteService {
     }
   }
 
-  List<Map<String, double>> _decodePolyline(String encoded) {
-    List<Map<String, double>> points = [];
-    int index = 0, len = encoded.length;
-    int lat = 0, lng = 0;
+  Future<Map<String, dynamic>?> _getDirectRoute(LatLng origin, LatLng destination) async {
+    final url = Uri.parse('https://routes.googleapis.com/directions/v2:computeRoutes');
+    
+    final requestBody = {
+      'origin': {
+        'location': {
+          'latLng': {
+            'latitude': origin.latitude,
+            'longitude': origin.longitude,
+          },
+        },
+      },
+      'destination': {
+        'location': {
+          'latLng': {
+            'latitude': destination.latitude,
+            'longitude': destination.longitude,
+          },
+        },
+      },
+      'travelMode': 'DRIVE',
+      'routingPreference': 'TRAFFIC_AWARE',
+      'computeAlternativeRoutes': false,
+      'routeModifiers': {
+        'vehicleInfo': {
+          'emissionType': 'GASOLINE',
+        },
+      },
+      'languageCode': 'ja-JP',
+      'units': 'METRIC',
+    };
 
-    while (index < len) {
-      int b, shift = 0, result = 0;
-      do {
-        b = encoded.codeUnitAt(index++) - 63;
-        result |= (b & 0x1F) << shift;
-        shift += 5;
-      } while (b >= 0x20);
+    final response = await http.post(
+      url,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': _apiKey,
+        'X-Goog-FieldMask': 'routes.duration,routes.distanceMeters,routes.polyline.encodedPolyline',
+      },
+      body: json.encode(requestBody),
+    );
 
-      int dlat = ((result & 1) != 0 ? ~(result >> 1) : (result >> 1));
-      lat += dlat;
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body);
+      if (data['routes'] != null && data['routes'].isNotEmpty) {
+        final route = data['routes'][0];
+        final encodedPolyline = route['polyline']['encodedPolyline'];
+        final duration = route['duration'].toString();
+        
+        // エンコードされたポリラインをデコード
+        final points = _decodePolyline(encodedPolyline);
+        
+        if (points.isNotEmpty) {
+          List<LatLng> polylineCoordinates = points
+              .map((point) => LatLng(
+                    point['lat'] ?? 0.0,
+                    point['lng'] ?? 0.0,
+                  ))
+              .toList();
 
-      shift = 0;
-      result = 0;
-      do {
-        b = encoded.codeUnitAt(index++) - 63;
-        result |= (b & 0x1F) << shift;
-        shift += 5;
-      } while (b >= 0x20);
+          // 所要時間を分に変換（秒から分へ）
+          int durationInMinutes;
+          if (duration.endsWith('s')) {
+            // 秒単位の場合
+            final seconds = int.parse(duration.replaceAll('s', ''));
+            durationInMinutes = (seconds / 60).ceil();
+          } else {
+            // 分単位の場合
+            durationInMinutes = int.parse(duration);
+          }
 
-      int dlng = ((result & 1) != 0 ? ~(result >> 1) : (result >> 1));
-      lng += dlng;
-
-      points.add({
-        'lat': lat / 1E5,
-        'lng': lng / 1E5,
-      });
+          return {
+            'polylines': {
+              Polyline(
+                polylineId: const PolylineId('route'),
+                color: Colors.blue,
+                points: polylineCoordinates,
+                width: 5,
+              ),
+            },
+            'duration': durationInMinutes,
+          };
+        }
+      }
     }
+    return null;
+  }
 
-    return points;
+  Future<Map<String, dynamic>?> _getRouteWithWaypoints(
+    LatLng origin,
+    LatLng destination,
+    List<Place> waypoints,
+  ) async {
+    final url = Uri.parse('https://routes.googleapis.com/directions/v2:computeRoutes');
+    
+    final requestBody = {
+      'origin': {
+        'location': {
+          'latLng': {
+            'latitude': origin.latitude,
+            'longitude': origin.longitude,
+          },
+        },
+      },
+      'destination': {
+        'location': {
+          'latLng': {
+            'latitude': destination.latitude,
+            'longitude': destination.longitude,
+          },
+        },
+      },
+      'intermediates': waypoints.map((waypoint) => {
+        'location': {
+          'latLng': {
+            'latitude': waypoint.location.latitude,
+            'longitude': waypoint.location.longitude,
+          },
+        },
+      }).toList(),
+      'travelMode': 'DRIVE',
+      'routingPreference': 'TRAFFIC_AWARE',
+      'computeAlternativeRoutes': false,
+      'routeModifiers': {
+        'vehicleInfo': {
+          'emissionType': 'GASOLINE',
+        },
+      },
+      'languageCode': 'ja-JP',
+      'units': 'METRIC',
+    };
+
+    final response = await http.post(
+      url,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': _apiKey,
+        'X-Goog-FieldMask': 'routes.duration,routes.distanceMeters,routes.polyline.encodedPolyline',
+      },
+      body: json.encode(requestBody),
+    );
+
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body);
+      if (data['routes'] != null && data['routes'].isNotEmpty) {
+        final route = data['routes'][0];
+        final encodedPolyline = route['polyline']['encodedPolyline'];
+        
+        final points = _decodePolyline(encodedPolyline);
+        
+        if (points.isNotEmpty) {
+          List<LatLng> polylineCoordinates = points
+              .map((point) => LatLng(
+                    point['lat'] ?? 0.0,
+                    point['lng'] ?? 0.0,
+                  ))
+              .toList();
+
+          return {
+            'polylines': {
+              Polyline(
+                polylineId: const PolylineId('route'),
+                color: Colors.blue,
+                points: polylineCoordinates,
+                width: 5,
+              ),
+            },
+          };
+        }
+      }
+    }
+    return null;
   }
 
   Future<List<Place>> _findWaypoints(
     LatLng origin,
     LatLng destination,
-    int additionalTime,
+    int baseDuration,
+    int targetAdditionalTime,
   ) async {
     try {
-      // 経由地点の検索範囲を計算
       final midPoint = LatLng(
         (origin.latitude + destination.latitude) / 2,
         (origin.longitude + destination.longitude) / 2,
       );
       
-      // 検索範囲の半径を計算（メートル単位）
       final radius = _calculateSearchRadius(origin, destination);
-
-      // 検索するカテゴリーのリスト
       final categories = [
         'restaurant',
         'park',
@@ -190,7 +262,6 @@ class RouteService {
 
       List<Place> allPlaces = [];
       
-      // カテゴリーごとに検索
       for (final category in categories) {
         final url = Uri.parse(
           'https://places.googleapis.com/v1/places:searchNearby'
@@ -237,19 +308,75 @@ class RouteService {
               ));
             }
           }
-        } else {
-          print('Places API エラー: ${response.statusCode}');
-          print('レスポンス: ${response.body}');
         }
       }
 
-      // 評価順にソートして上位3件を返す
-      allPlaces.sort((a, b) => (b.rating ?? 0).compareTo(a.rating ?? 0));
-      return allPlaces.take(3).toList();
+      // 各施設までの所要時間を計算し、目標追加時間に近い施設を選択
+      List<Map<String, dynamic>> placesWithDuration = [];
+      for (final place in allPlaces) {
+        final routeToPlace = await _getDirectRoute(origin, place.location);
+        final routeFromPlace = await _getDirectRoute(place.location, destination);
+        
+        if (routeToPlace != null && routeFromPlace != null) {
+          final totalDuration = routeToPlace['duration'] + routeFromPlace['duration'];
+          final additionalDuration = totalDuration - baseDuration;
+          
+          placesWithDuration.add({
+            'place': place,
+            'duration': additionalDuration,
+            'diff': (additionalDuration - targetAdditionalTime).abs(),
+          });
+        }
+      }
+
+      // 目標時間との差が小さい順にソート
+      placesWithDuration.sort((a, b) => a['diff'].compareTo(b['diff']));
+      
+      // 上位3件を返す
+      return placesWithDuration
+          .take(3)
+          .map((item) => item['place'] as Place)
+          .toList();
     } catch (e) {
       print('経由地点検索エラー: $e');
       return [];
     }
+  }
+
+  List<Map<String, double>> _decodePolyline(String encoded) {
+    List<Map<String, double>> points = [];
+    int index = 0, len = encoded.length;
+    int lat = 0, lng = 0;
+
+    while (index < len) {
+      int b, shift = 0, result = 0;
+      do {
+        b = encoded.codeUnitAt(index++) - 63;
+        result |= (b & 0x1F) << shift;
+        shift += 5;
+      } while (b >= 0x20);
+
+      int dlat = ((result & 1) != 0 ? ~(result >> 1) : (result >> 1));
+      lat += dlat;
+
+      shift = 0;
+      result = 0;
+      do {
+        b = encoded.codeUnitAt(index++) - 63;
+        result |= (b & 0x1F) << shift;
+        shift += 5;
+      } while (b >= 0x20);
+
+      int dlng = ((result & 1) != 0 ? ~(result >> 1) : (result >> 1));
+      lng += dlng;
+
+      points.add({
+        'lat': lat / 1E5,
+        'lng': lng / 1E5,
+      });
+    }
+
+    return points;
   }
 
   double _calculateSearchRadius(LatLng origin, LatLng destination) {
