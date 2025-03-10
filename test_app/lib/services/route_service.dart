@@ -252,6 +252,8 @@ class RouteService {
       );
       
       final radius = _calculateSearchRadius(origin, destination);
+      // カテゴリ一覧
+      // https://developers.google.com/maps/documentation/javascript/place-types?hl=ja#facilities
       final categories = [
         'restaurant',
         'park',
