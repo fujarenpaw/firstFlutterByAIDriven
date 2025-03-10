@@ -1,5 +1,4 @@
 import 'package:google_maps_flutter/google_maps_flutter.dart';
-import 'package:flutter_polyline_points/flutter_polyline_points.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter_dotenv/flutter_dotenv.dart';
@@ -8,7 +7,6 @@ import 'dart:math';
 import '../models/place.dart';
 
 class RouteService {
-  final PolylinePoints _polylinePoints = PolylinePoints();
   late final String _apiKey;
 
   RouteService() {
@@ -27,42 +25,142 @@ class RouteService {
     Set<Polyline> polylines = {};
     
     try {
-      final result = await _polylinePoints.getRouteBetweenCoordinates(
-        googleApiKey: _apiKey,
-        request: PolylineRequest(
-          origin: PointLatLng(origin.latitude, origin.longitude),
-          destination: PointLatLng(destination.latitude, destination.longitude),
-          mode: TravelMode.driving,
-        ),
+      print('ルート検索開始: ${origin.latitude},${origin.longitude} → ${destination.latitude},${destination.longitude}');
+      print('APIキー: ${_apiKey.substring(0, 8)}...'); // APIキーの一部を表示
+
+      final url = Uri.parse('https://routes.googleapis.com/directions/v2:computeRoutes');
+      
+      final requestBody = {
+        'origin': {
+          'location': {
+            'latLng': {
+              'latitude': origin.latitude,
+              'longitude': origin.longitude,
+            },
+          },
+        },
+        'destination': {
+          'location': {
+            'latLng': {
+              'latitude': destination.latitude,
+              'longitude': destination.longitude,
+            },
+          },
+        },
+        'travelMode': 'DRIVE',
+        'routingPreference': 'TRAFFIC_AWARE',
+        'computeAlternativeRoutes': false,
+        'routeModifiers': {
+          'vehicleInfo': {
+            'emissionType': 'GASOLINE',
+          },
+        },
+        'languageCode': 'ja-JP',
+        'units': 'METRIC',
+      };
+
+      final response = await http.post(
+        url,
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Goog-Api-Key': _apiKey,
+          'X-Goog-FieldMask': 'routes.duration,routes.distanceMeters,routes.polyline.encodedPolyline',
+        },
+        body: json.encode(requestBody),
       );
 
-      if (result.points.isNotEmpty) {
-        List<LatLng> polylineCoordinates = result.points
-            .map((point) => LatLng(point.latitude, point.longitude))
-            .toList();
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        if (data['routes'] != null && data['routes'].isNotEmpty) {
+          final route = data['routes'][0];
+          final encodedPolyline = route['polyline']['encodedPolyline'];
+          
+          // エンコードされたポリラインをデコード
+          final points = _decodePolyline(encodedPolyline);
+          
+          if (points.isNotEmpty) {
+            List<LatLng> polylineCoordinates = points
+                .map((point) => LatLng(
+                      point['lat'] ?? 0.0,
+                      point['lng'] ?? 0.0,
+                    ))
+                .toList();
 
-        polylines.add(
-          Polyline(
-            polylineId: const PolylineId('route'),
-            color: Colors.blue,
-            points: polylineCoordinates,
-            width: 5,
-          ),
-        );
+            polylines.add(
+              Polyline(
+                polylineId: const PolylineId('route'),
+                color: Colors.blue,
+                points: polylineCoordinates,
+                width: 5,
+              ),
+            );
+            
+            print('ルート生成成功: ${points.length}ポイント');
+          } else {
+            print('警告: ポリラインのポイントが空です');
+          }
+        } else {
+          print('警告: ルートが見つかりませんでした');
+          throw Exception('ルートが見つかりませんでした');
+        }
+      } else {
+        print('Directions API エラー: ${response.statusCode}');
+        print('レスポンス: ${response.body}');
+        throw Exception('ルート取得エラー: ${response.statusCode}');
       }
 
       // 追加時間がある場合は経由地点を探索
       if (additionalTime != null) {
+        print('経由地点の検索開始: 追加時間=$additionalTime分');
         waypoints = await _findWaypoints(origin, destination, additionalTime);
+        print('経由地点の検索完了: ${waypoints.length}件');
       }
 
       return {
         'polylines': polylines,
         'waypoints': waypoints,
       };
-    } catch (e) {
+    } catch (e, stackTrace) {
+      print('RouteService エラー: $e');
+      print('スタックトレース: $stackTrace');
       rethrow;
     }
+  }
+
+  List<Map<String, double>> _decodePolyline(String encoded) {
+    List<Map<String, double>> points = [];
+    int index = 0, len = encoded.length;
+    int lat = 0, lng = 0;
+
+    while (index < len) {
+      int b, shift = 0, result = 0;
+      do {
+        b = encoded.codeUnitAt(index++) - 63;
+        result |= (b & 0x1F) << shift;
+        shift += 5;
+      } while (b >= 0x20);
+
+      int dlat = ((result & 1) != 0 ? ~(result >> 1) : (result >> 1));
+      lat += dlat;
+
+      shift = 0;
+      result = 0;
+      do {
+        b = encoded.codeUnitAt(index++) - 63;
+        result |= (b & 0x1F) << shift;
+        shift += 5;
+      } while (b >= 0x20);
+
+      int dlng = ((result & 1) != 0 ? ~(result >> 1) : (result >> 1));
+      lng += dlng;
+
+      points.add({
+        'lat': lat / 1E5,
+        'lng': lng / 1E5,
+      });
+    }
+
+    return points;
   }
 
   Future<List<Place>> _findWaypoints(
@@ -94,31 +192,53 @@ class RouteService {
       // カテゴリーごとに検索
       for (final category in categories) {
         final url = Uri.parse(
-          'https://maps.googleapis.com/maps/api/place/nearbysearch/json?'
-          'location=${midPoint.latitude},${midPoint.longitude}'
-          '&radius=$radius'
-          '&type=$category'
-          '&key=$_apiKey'
+          'https://places.googleapis.com/v1/places:searchNearby'
         );
 
-        final response = await http.get(url);
+        final requestBody = {
+          'locationRestriction': {
+            'circle': {
+              'center': {
+                'latitude': midPoint.latitude,
+                'longitude': midPoint.longitude,
+              },
+              'radius': radius,
+            },
+          },
+          'includedTypes': [category],
+          'maxResultCount': 20,
+        };
+
+        final response = await http.post(
+          url,
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Goog-Api-Key': _apiKey,
+            'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.rating,places.location',
+          },
+          body: json.encode(requestBody),
+        );
+
         if (response.statusCode == 200) {
           final data = json.decode(response.body);
-          if (data['status'] == 'OK') {
-            final results = data['results'] as List;
-            for (final place in results) {
+          if (data['places'] != null) {
+            final places = data['places'] as List;
+            for (final place in places) {
               allPlaces.add(Place(
-                id: place['place_id'],
-                name: place['name'],
+                id: place['id'] ?? '',
+                name: place['displayName']['text'] ?? '',
                 category: _mapGooglePlaceTypeToCategory(category),
                 location: LatLng(
-                  place['geometry']['location']['lat'],
-                  place['geometry']['location']['lng'],
+                  place['location']['latitude'],
+                  place['location']['longitude'],
                 ),
                 rating: place['rating']?.toDouble(),
               ));
             }
           }
+        } else {
+          print('Places API エラー: ${response.statusCode}');
+          print('レスポンス: ${response.body}');
         }
       }
 
@@ -126,7 +246,7 @@ class RouteService {
       allPlaces.sort((a, b) => (b.rating ?? 0).compareTo(a.rating ?? 0));
       return allPlaces.take(3).toList();
     } catch (e) {
-      print('Error finding waypoints: $e');
+      print('経由地点検索エラー: $e');
       return [];
     }
   }

@@ -76,6 +76,7 @@ class _MapScreenState extends State<MapScreen> {
 
     serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
+      print('位置情報サービスが無効です');
       return;
     }
 
@@ -83,28 +84,35 @@ class _MapScreenState extends State<MapScreen> {
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
       if (permission == LocationPermission.denied) {
+        print('位置情報の権限が拒否されました');
         return;
       }
     }
 
     if (permission == LocationPermission.deniedForever) {
+      print('位置情報の権限が永続的に拒否されました');
       return;
     }
 
-    final Position position = await Geolocator.getCurrentPosition();
-    setState(() {
-      _currentPosition = position;
-      _updateCurrentLocationMarker();
-    });
+    try {
+      final Position position = await Geolocator.getCurrentPosition();
+      print('現在地を取得: lat=${position.latitude}, lng=${position.longitude}');
+      setState(() {
+        _currentPosition = position;
+        _updateCurrentLocationMarker();
+      });
 
-    _controller?.animateCamera(
-      CameraUpdate.newCameraPosition(
-        CameraPosition(
-          target: LatLng(position.latitude, position.longitude),
-          zoom: 15.0,
+      _controller?.animateCamera(
+        CameraUpdate.newCameraPosition(
+          CameraPosition(
+            target: LatLng(position.latitude, position.longitude),
+            zoom: 15.0,
+          ),
         ),
-      ),
-    );
+      );
+    } catch (e) {
+      print('現在地の取得に失敗: $e');
+    }
   }
 
   void _updateCurrentLocationMarker() {
@@ -124,21 +132,31 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> _generateRoute(int? additionalTime) async {
-    if (_currentPosition == null || _destinationLocation == null) return;
+    if (_currentPosition == null || _destinationLocation == null) {
+      print('ルート生成エラー: 出発地または目的地が設定されていません');
+      print('出発地: ${_currentPosition?.latitude},${_currentPosition?.longitude}');
+      print('目的地: ${_destinationLocation?.latitude},${_destinationLocation?.longitude}');
+      return;
+    }
 
     try {
+      print('ルート生成開始: 追加時間=$additionalTime分');
       final result = await _routeService.generateRoute(
         origin: LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
         destination: _destinationLocation!,
         additionalTime: additionalTime,
       );
 
+      // バッチで状態を更新
       setState(() {
         _polylines.clear();
         _polylines.addAll(result['polylines'] as Set<Polyline>);
         _waypoints = result['waypoints'] as List<Place>;
         
-        // 経由地点のマーカーを追加
+        // 既存の経由地点マーカーを削除
+        _markers.removeWhere((marker) => marker.markerId.value.startsWith('waypoint_'));
+        
+        // 新しい経由地点のマーカーを追加
         for (var waypoint in _waypoints) {
           _markers.add(
             Marker(
@@ -152,8 +170,9 @@ class _MapScreenState extends State<MapScreen> {
           );
         }
       });
+      print('ルート生成完了: ${_polylines.length}本のポリライン, ${_waypoints.length}個の経由地点');
     } catch (e) {
-      // エラー処理
+      print('ルート生成エラー: $e');
     }
   }
 
@@ -270,6 +289,11 @@ class _MapScreenState extends State<MapScreen> {
                 );
               });
             },
+            liteModeEnabled: false,
+            zoomControlsEnabled: true,
+            zoomGesturesEnabled: true,
+            mapToolbarEnabled: false,
+            compassEnabled: true,
           ),
           // 検索バー
           SafeArea(
