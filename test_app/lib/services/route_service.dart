@@ -23,6 +23,7 @@ class RouteService {
   }) async {
     List<Place> waypoints = [];
     Set<Polyline> polylines = {};
+    int? routeDuration;
     
     try {
       print('ルート検索開始: ${origin.latitude},${origin.longitude} → ${destination.latitude},${destination.longitude}');
@@ -35,6 +36,7 @@ class RouteService {
       }
 
       final baseDuration = directRoute['duration'];
+      routeDuration = baseDuration;
       print('最短ルートの所要時間: $baseDuration分');
 
       // 追加時間がある場合は経由地点を探索
@@ -49,6 +51,7 @@ class RouteService {
         final routeWithWaypoints = await _getRouteWithWaypoints(origin, destination, waypoints);
         if (routeWithWaypoints != null) {
           polylines = routeWithWaypoints['polylines'];
+          routeDuration = routeWithWaypoints['duration'];
         }
       } else {
         polylines = directRoute['polylines'];
@@ -57,6 +60,7 @@ class RouteService {
       return {
         'polylines': polylines,
         'waypoints': waypoints,
+        'duration': routeDuration,
       };
     } catch (e, stackTrace) {
       print('RouteService エラー: $e');
@@ -212,6 +216,7 @@ class RouteService {
       if (data['routes'] != null && data['routes'].isNotEmpty) {
         final route = data['routes'][0];
         final encodedPolyline = route['polyline']['encodedPolyline'];
+        final duration = route['duration'].toString();
         
         final points = _decodePolyline(encodedPolyline);
         
@@ -223,6 +228,17 @@ class RouteService {
                   ))
               .toList();
 
+          // 所要時間を分に変換（秒から分へ）
+          int durationInMinutes;
+          if (duration.endsWith('s')) {
+            // 秒単位の場合
+            final seconds = int.parse(duration.replaceAll('s', ''));
+            durationInMinutes = (seconds / 60).ceil();
+          } else {
+            // 分単位の場合
+            durationInMinutes = int.parse(duration);
+          }
+
           return {
             'polylines': {
               Polyline(
@@ -232,6 +248,7 @@ class RouteService {
                 width: 5,
               ),
             },
+            'duration': durationInMinutes,
           };
         }
       }
@@ -252,9 +269,9 @@ class RouteService {
       );
       
       final radius = _calculateSearchRadius(origin, destination);
+      
       // カテゴリ一覧
-      // https://developers.google.com/maps/documentation/javascript/place-types?hl=ja#facilities
-      final categories = [
+      final allCategories = [
         'restaurant',
         'park',
         'tourist_attraction',
@@ -262,9 +279,23 @@ class RouteService {
         'shopping_mall',
       ];
 
+      // 目的地のカテゴリを取得
+      final destinationCategory = await _getPlaceCategory(destination);
+      
+      // 目的地と異なるカテゴリのみをフィルタリング
+      final availableCategories = allCategories.where((category) => 
+        _mapGooglePlaceTypeToCategory(category) != destinationCategory
+      ).toList();
+
+      // 所要時間に応じてカテゴリ数を決定
+      final numCategories = targetAdditionalTime >= 60 ? 2 : 1;
+      
+      // カテゴリの検索順序を決定
+      final searchOrder = _determineSearchOrder(availableCategories, numCategories);
+      
       List<Place> allPlaces = [];
       
-      for (final category in categories) {
+      for (final category in searchOrder) {
         final url = Uri.parse(
           'https://places.googleapis.com/v1/places:searchNearby'
         );
@@ -308,6 +339,13 @@ class RouteService {
                 ),
                 rating: place['rating']?.toDouble(),
               ));
+            }
+            
+            // 所要時間に応じて必要な施設数を判定
+            // +60分の場合は2以上、それ以外（+15分、+30分）は1以上で十分
+            final requiredPlaces = targetAdditionalTime >= 60 ? 2 : 1;
+            if (allPlaces.length >= requiredPlaces) {
+              break;
             }
           }
         }
@@ -410,8 +448,103 @@ class RouteService {
         return PlaceCategory.cafe;
       case 'shopping_mall':
         return PlaceCategory.shopping;
+      case 'museum':
+        return PlaceCategory.tourist;
+      case 'library':
+        return PlaceCategory.tourist;
+      case 'art_gallery':
+        return PlaceCategory.tourist;
+      case 'bakery':
+        return PlaceCategory.restaurant;
+      case 'supermarket':
+        return PlaceCategory.shopping;
       default:
         return PlaceCategory.other;
     }
+  }
+
+  // カテゴリの検索順序を決定する関数
+  List<String> _determineSearchOrder(List<String> categories, int count) {
+    final random = Random();
+    final selected = <String>[];
+    final available = List<String>.from(categories);
+    
+    // カテゴリの優先順位を設定（ランダムに並び替え）
+    final baseCategories = [
+      'restaurant',    // レストラン
+      'cafe',         // カフェ
+      'tourist_attraction', // 観光地
+      'park',         // 公園
+      'shopping_mall', // ショッピングモール
+      'museum',       // 博物館
+      'library',      // 図書館
+      'bakery',       // パン屋
+      'supermarket',  // スーパーマーケット
+      'art_gallery'   // アートギャラリー
+    ];
+    
+    // カテゴリリストをランダムに並び替え
+    final priorityOrder = List<String>.from(baseCategories)..shuffle(random);
+    
+    // 優先順位に基づいてカテゴリを選択
+    for (final priority in priorityOrder) {
+      if (available.contains(priority)) {
+        selected.add(priority);
+        available.remove(priority);
+        if (selected.length >= count) break;
+      }
+    }
+    
+    // 必要な数に達していない場合は、残りのカテゴリからランダムに選択
+    while (selected.length < count && available.isNotEmpty) {
+      final index = random.nextInt(available.length);
+      selected.add(available.removeAt(index));
+    }
+    
+    return selected;
+  }
+
+  // 指定された位置のカテゴリを取得する関数
+  Future<PlaceCategory> _getPlaceCategory(LatLng location) async {
+    try {
+      final url = Uri.parse('https://places.googleapis.com/v1/places:searchNearby');
+      
+      final requestBody = {
+        'locationRestriction': {
+          'circle': {
+            'center': {
+              'latitude': location.latitude,
+              'longitude': location.longitude,
+            },
+            'radius': 100, // 非常に小さい半径で検索
+          },
+        },
+        'maxResultCount': 1,
+      };
+
+      final response = await http.post(
+        url,
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Goog-Api-Key': _apiKey,
+          'X-Goog-FieldMask': 'places.types',
+        },
+        body: json.encode(requestBody),
+      );
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        if (data['places'] != null && data['places'].isNotEmpty) {
+          final place = data['places'][0];
+          if (place['types'] != null && place['types'].isNotEmpty) {
+            return _mapGooglePlaceTypeToCategory(place['types'][0]);
+          }
+        }
+      }
+    } catch (e) {
+      print('カテゴリ取得エラー: $e');
+    }
+    
+    return PlaceCategory.other; // デフォルト値
   }
 } 

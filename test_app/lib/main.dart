@@ -52,6 +52,9 @@ class _MapScreenState extends State<MapScreen> {
   final TextEditingController _searchController = TextEditingController();
   List<dynamic> _searchResults = [];
   bool _isSearching = false;
+  int? _shortestRouteDuration; // 最短ルートの所要時間（分）
+  int? _currentRouteDuration; // 現在のルートの所要時間（分）
+  int? _additionalTime; // 追加時間（分）
 
   static const CameraPosition _initialPosition = CameraPosition(
     target: LatLng(35.6812, 139.7671), // 東京の座標
@@ -158,6 +161,13 @@ class _MapScreenState extends State<MapScreen> {
         _polylines.clear();
         _polylines.addAll(result['polylines'] as Set<Polyline>);
         _waypoints = result['waypoints'] as List<Place>;
+        _currentRouteDuration = result['duration'] as int;
+        _additionalTime = additionalTime;
+        
+        // 最短ルートの所要時間を保存（追加時間がnullの場合）
+        if (additionalTime == null) {
+          _shortestRouteDuration = _currentRouteDuration;
+        }
         
         // 既存の経由地点マーカーを削除
         _markers.removeWhere((marker) => marker.markerId.value.startsWith('waypoint_'));
@@ -410,6 +420,19 @@ class _MapScreenState extends State<MapScreen> {
                             subtitle: Text(_waypoints[index].category.toString()),
                           ),
                         ),
+                        if (_shortestRouteDuration != null && _currentRouteDuration != null)
+                          Padding(
+                            padding: const EdgeInsets.all(8.0),
+                            child: Text(
+                              _additionalTime == null
+                                  ? '所要時間: $_currentRouteDuration分'
+                                  : '所要時間: $_currentRouteDuration分 (最短ルートより${_currentRouteDuration! - _shortestRouteDuration!}分長い)',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 16,
+                              ),
+                            ),
+                          ),
                       ],
                     ],
                   ),
