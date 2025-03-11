@@ -148,7 +148,7 @@ class _MapScreenState extends State<MapScreen> {
     }
 
     try {
-      print('ルート生成開始: 追加時間=$additionalTime分');
+      print('ルート生成開始: 追加時間=${additionalTime ?? "なし"}分');
       final result = await _routeService.generateRoute(
         origin: LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
         destination: _destinationLocation!,
@@ -157,6 +157,17 @@ class _MapScreenState extends State<MapScreen> {
 
       if (!mounted) return;
 
+      // 最短ルートの所要時間が未設定の場合、先に取得
+      if (_shortestRouteDuration == null) {
+        final shortestResult = await _routeService.generateRoute(
+          origin: LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
+          destination: _destinationLocation!,
+          additionalTime: null,
+        );
+        _shortestRouteDuration = shortestResult['duration'] as int;
+        print('最短ルート所要時間を取得: $_shortestRouteDuration分');
+      }
+
       setState(() {
         _polylines.clear();
         _polylines.addAll(result['polylines'] as Set<Polyline>);
@@ -164,9 +175,23 @@ class _MapScreenState extends State<MapScreen> {
         _currentRouteDuration = result['duration'] as int;
         _additionalTime = additionalTime;
         
-        // 最短ルートの所要時間を保存（追加時間がnullの場合）
         if (additionalTime == null) {
           _shortestRouteDuration = _currentRouteDuration;
+          print('最短ルート生成完了: 所要時間 $_currentRouteDuration分');
+        } else {
+          print('よりみちルート生成完了:');
+          print('  - 最短ルート所要時間: $_shortestRouteDuration分');
+          print('  - よりみちルート所要時間: $_currentRouteDuration分');
+          if (_shortestRouteDuration != null) {
+            final additionalDuration = _currentRouteDuration! - _shortestRouteDuration!;
+            print('  - 追加所要時間: ${additionalDuration}分');
+          }
+          if (_waypoints.isNotEmpty) {
+            print('  - 経由地点:');
+            for (var i = 0; i < _waypoints.length; i++) {
+              print('    ${i + 1}. ${_waypoints[i].name} (${_waypoints[i].category})');
+            }
+          }
         }
         
         // 既存の経由地点マーカーを削除
@@ -186,8 +211,9 @@ class _MapScreenState extends State<MapScreen> {
           );
         }
       });
-    } catch (e) {
+    } catch (e, stackTrace) {
       print('ルート生成エラー: $e');
+      print('スタックトレース: $stackTrace');
     }
   }
 
@@ -384,57 +410,124 @@ class _MapScreenState extends State<MapScreen> {
               left: 16,
               right: 16,
               child: Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(8.0),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                child: Container(
+                  constraints: BoxConstraints(
+                    maxHeight: MediaQuery.of(context).size.height * 0.4, // 画面の40%の高さまで
+                  ),
+                  child: SingleChildScrollView(
+                    child: Padding(
+                      padding: const EdgeInsets.all(8.0),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
                         children: [
-                          ElevatedButton(
-                            onPressed: () => _generateRoute(null),
-                            child: const Text('最短ルート'),
-                          ),
-                          ElevatedButton(
-                            onPressed: () => _generateRoute(15),
-                            child: const Text('+15分'),
-                          ),
-                          ElevatedButton(
-                            onPressed: () => _generateRoute(30),
-                            child: const Text('+30分'),
-                          ),
-                          ElevatedButton(
-                            onPressed: () => _generateRoute(60),
-                            child: const Text('+60分'),
-                          ),
-                        ],
-                      ),
-                      if (_waypoints.isNotEmpty) ...[
-                        const SizedBox(height: 8),
-                        const Text('経由地点:', style: TextStyle(fontWeight: FontWeight.bold)),
-                        ...List.generate(
-                          _waypoints.length,
-                          (index) => ListTile(
-                            title: Text(_waypoints[index].name),
-                            subtitle: Text(_waypoints[index].category.toString()),
-                          ),
-                        ),
-                        if (_shortestRouteDuration != null && _currentRouteDuration != null)
-                          Padding(
-                            padding: const EdgeInsets.all(8.0),
-                            child: Text(
-                              _additionalTime == null
-                                  ? '所要時間: $_currentRouteDuration分'
-                                  : '所要時間: $_currentRouteDuration分 (最短ルートより${_currentRouteDuration! - _shortestRouteDuration!}分長い)',
-                              style: const TextStyle(
-                                fontWeight: FontWeight.bold,
-                                fontSize: 16,
-                              ),
+                          // ルートボタン
+                          SingleChildScrollView(
+                            scrollDirection: Axis.horizontal,
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                              children: [
+                                Padding(
+                                  padding: const EdgeInsets.symmetric(horizontal: 4.0),
+                                  child: ElevatedButton(
+                                    onPressed: () => _generateRoute(null),
+                                    child: const Text('最短ルート'),
+                                  ),
+                                ),
+                                Padding(
+                                  padding: const EdgeInsets.symmetric(horizontal: 4.0),
+                                  child: ElevatedButton(
+                                    onPressed: () => _generateRoute(15),
+                                    child: const Text('+15分'),
+                                  ),
+                                ),
+                                Padding(
+                                  padding: const EdgeInsets.symmetric(horizontal: 4.0),
+                                  child: ElevatedButton(
+                                    onPressed: () => _generateRoute(30),
+                                    child: const Text('+30分'),
+                                  ),
+                                ),
+                                Padding(
+                                  padding: const EdgeInsets.symmetric(horizontal: 4.0),
+                                  child: ElevatedButton(
+                                    onPressed: () => _generateRoute(60),
+                                    child: const Text('+60分'),
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
-                      ],
-                    ],
+                          // 所要時間の表示
+                          if (_shortestRouteDuration != null && _currentRouteDuration != null) ...[
+                            const SizedBox(height: 12),
+                            Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.symmetric(vertical: 12.0, horizontal: 16.0),
+                              decoration: BoxDecoration(
+                                color: Colors.blue.withOpacity(0.1),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Column(
+                                children: [
+                                  Text(
+                                    '所要時間: $_currentRouteDuration分',
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 18,
+                                    ),
+                                  ),
+                                  if (_additionalTime != null) ...[
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      '(最短ルートより+${_currentRouteDuration! - _shortestRouteDuration!}分)',
+                                      style: TextStyle(
+                                        color: Colors.blue[700],
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.w500,
+                                      ),
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            ),
+                          ],
+                          // 経由地点の表示
+                          if (_waypoints.isNotEmpty) ...[
+                            const SizedBox(height: 16),
+                            const Padding(
+                              padding: EdgeInsets.symmetric(horizontal: 16.0),
+                              child: Row(
+                                children: [
+                                  Icon(Icons.place, size: 20),
+                                  SizedBox(width: 8),
+                                  Text(
+                                    '経由地点',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 16,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            ...List.generate(
+                              _waypoints.length,
+                              (index) => ListTile(
+                                leading: CircleAvatar(
+                                  backgroundColor: Colors.blue.withOpacity(0.1),
+                                  child: Text('${index + 1}'),
+                                ),
+                                title: Text(_waypoints[index].name),
+                                subtitle: Text(_waypoints[index].category.toString()),
+                              ),
+                            ),
+                          ],
+                          // 下部の余白
+                          const SizedBox(height: 8),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
               ),
