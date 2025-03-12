@@ -89,14 +89,9 @@ class RouteService {
           },
         },
       },
-      'travelMode': 'DRIVE',
-      'routingPreference': 'TRAFFIC_AWARE',
+      'travelMode': 'WALK',
       'computeAlternativeRoutes': false,
-      'routeModifiers': {
-        'vehicleInfo': {
-          'emissionType': 'GASOLINE',
-        },
-      },
+      'routeModifiers': {},
       'languageCode': 'ja-JP',
       'units': 'METRIC',
     };
@@ -110,6 +105,9 @@ class RouteService {
       },
       body: json.encode(requestBody),
     );
+
+    print('API Response Status: ${response.statusCode}');
+    print('API Response Body: ${response.body}');
 
     if (response.statusCode == 200) {
       final data = json.decode(response.body);
@@ -189,14 +187,9 @@ class RouteService {
           },
         },
       }).toList(),
-      'travelMode': 'DRIVE',
-      'routingPreference': 'TRAFFIC_AWARE',
+      'travelMode': 'WALK',
       'computeAlternativeRoutes': false,
-      'routeModifiers': {
-        'vehicleInfo': {
-          'emissionType': 'GASOLINE',
-        },
-      },
+      'routeModifiers': {},
       'languageCode': 'ja-JP',
       'units': 'METRIC',
     };
@@ -210,6 +203,9 @@ class RouteService {
       },
       body: json.encode(requestBody),
     );
+
+    print('API Response Status: ${response.statusCode}');
+    print('API Response Body: ${response.body}');
 
     if (response.statusCode == 200) {
       final data = json.decode(response.body);
